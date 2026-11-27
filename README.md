@@ -32,8 +32,9 @@ the screen (Brush → *Draw with finger* changes it). **Share video** opens the 
 you switch away from the app, so a phone closing the tab in the background doesn't lose work.
 Press **?** for all shortcuts.
 
-The site is published by `.github/workflows/pages.yml` on every push to `main`
-(one-time setup: repository *Settings → Pages → Source: GitHub Actions*).
+The site is GitHub Pages serving this repository's `main` branch (*Settings → Pages → Deploy
+from a branch → main / root*). The root `index.html` forwards to the app in `app/`, and
+`.nojekyll` stops GitHub from turning this README into the home page. Every push updates the site.
 
 ## Run locally (projects saved as files)
 
