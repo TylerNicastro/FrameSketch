@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>FrameSketch</title>
+  <meta name="description" content="Draw frames, time them, add voice-over and captions, and export a video.">
+  <meta name="theme-color" content="#16181d">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,12 +21,17 @@
   <header class="home-header">
     <h1>FrameSketch</h1>
     <p class="muted">Concept art, frame timing, voice-over and captions.</p>
+    <p class="muted small" id="storageNote"></p>
   </header>
   <div class="home-body">
     <div class="panel home-col">
       <div class="panel-head">
         <h2>Projects</h2>
-        <button id="btnNewProject" class="primary">+ New project</button>
+        <div class="row-actions">
+          <button id="btnImport" title="Open a project exported from another device (.fsk file or pasted text). You can also drop a file here.">Import&hellip;</button>
+          <button id="btnNewProject" class="primary">+ New project</button>
+        </div>
+        <input type="file" id="importFile" hidden>
       </div>
       <ul id="projectList" class="item-list"></ul>
       <p id="projectEmpty" class="muted empty">No projects yet. Create one to start drawing.</p>
@@ -27,6 +40,7 @@
       <div class="panel-head">
         <h2 id="savesTitle">Saves</h2>
         <div class="row-actions" id="projectActions" hidden>
+          <button id="btnBackupProject" title="Save this project with all its saves as one file (or text) to open on another device">Export</button>
           <button id="btnRenameProject">Rename</button>
           <button id="btnDuplicateProject">Duplicate</button>
           <button id="btnDeleteProject" class="danger">Delete</button>
@@ -42,8 +56,9 @@
 <section id="editor" class="screen" hidden>
   <header class="topbar">
     <button id="btnBack" title="Back to projects">&larr; Projects</button>
-    <div class="doc-title"><strong id="projName"></strong> <span class="muted">/</span> <span id="saveName"></span><span id="dirtyMark" class="dirty" hidden>&bull;</span></div>
+    <div class="doc-title"><strong id="projName"></strong> <span class="muted">/</span> <span id="saveName"></span><span id="dirtyMark" class="dirty" hidden>&bull;</span> <span id="saveState" class="save-state"></span></div>
     <button id="btnSave" class="primary" title="Save (Ctrl+S)">Save</button>
+    <label class="check" title="Save automatically a few seconds after each change, and when you switch away from the app"><input type="checkbox" id="chkAutoSave" checked> Auto-save</label>
     <button id="btnSaveAs" title="Save as a new save in this project (Ctrl+Shift+S)">Save as new</button>
     <span class="sep"></span>
     <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
@@ -59,8 +74,10 @@
     <label class="speed" title="Playback speed for testing (5 to 1000%). Audio pitch changes with it. Not saved and doesn't affect exports.">Speed <input type="number" id="playSpeed" min="5" max="1000" step="5" value="100">%</label>
     <label class="check"><input type="checkbox" id="chkOnion"> Onion skin</label>
     <span class="spacer"></span>
+    <button id="btnPanels" class="mobile-only" title="Show / hide the color, tool and layer panels">&#9776; Panels</button>
     <button id="btnCopyVideo" title="Record the whole scene as a video with audio and copy the file, ready to paste into Discord (Ctrl+V). Shift+click saves the file instead. Recording takes as long as the scene.">Copy video</button>
     <button id="btnExportPng" title="Export current frame as PNG">Export PNG</button>
+    <button id="btnShortcuts" class="ghost" title="Keyboard and touch shortcuts (?)">?</button>
   </header>
 
   <div class="workspace">
@@ -88,10 +105,22 @@
         </div>
       </div>
       <div class="status" id="status"></div>
+      <div class="quickbar mobile-only" id="quickbar">
+        <button id="qbUndo" title="Undo (or tap with two fingers)">&#8630;</button>
+        <button id="qbRedo" title="Redo (or tap with three fingers)">&#8631;</button>
+        <span class="qb-sep"></span>
+        <button id="qbPrev" title="Previous frame">&#9664;</button>
+        <span id="qbFrame" class="qb-frame">1/1</span>
+        <button id="qbNext" title="Next frame">&#9654;</button>
+        <span class="qb-sep"></span>
+        <label id="qbSizeWrap" class="qb-size" title="Brush size"><input type="range" id="qbSize" min="0" max="100" value="20"></label>
+        <button id="qbColor" class="qb-color" title="Color and panels"></button>
+      </div>
     </main>
 
     <!-- sidebar -->
-    <aside class="sidebar">
+    <div class="sidebar-back mobile-only" id="sidebarBack"></div>
+    <aside class="sidebar" id="sidebar">
       <div class="panel">
         <h3>Color</h3>
         <div class="color-row">
@@ -112,6 +141,7 @@
         <label class="opt" data-for="brush eraser">Smoothing <output id="smoothOut">30%</output>
           <input type="range" id="smoothInput" min="0" max="90" value="30"></label>
         <label class="opt check" data-for="brush eraser"><input type="checkbox" id="pressureInput" checked> Pen pressure</label>
+        <label class="opt check" data-for="brush eraser fill" title="Turn off when drawing with a pen so your palm doesn't draw; fingers then pan and zoom"><input type="checkbox" id="fingerDrawInput" checked> Draw with finger</label>
         <label class="opt" data-for="fill">Tolerance <output id="tolOut">32</output>
           <input type="range" id="tolInput" min="0" max="255" value="32"></label>
         <label class="opt check" data-for="fill picker"><input type="checkbox" id="sampleAllInput" checked> Sample all layers</label>
@@ -120,6 +150,12 @@
           <button id="btnSelAll" title="Ctrl+A">Select all</button>
           <button id="btnDeselect" title="Ctrl+D">Deselect</button>
           <button id="btnClearSel" title="Delete">Clear</button>
+        </div>
+        <div class="opt btn-row" data-for="rect lasso move">
+          <button id="btnCopySel" title="Ctrl+C">Copy</button>
+          <button id="btnCutSel" title="Ctrl+X">Cut</button>
+          <button id="btnPasteSel" title="Ctrl+V">Paste</button>
+          <button id="btnDropSel" title="Enter: put the moved pixels down">Drop</button>
         </div>
         <p class="opt muted small" data-for="rect lasso">Drag to select. Painting & fill stay inside the selection.</p>
         <p class="opt muted small" data-for="move">Drag to move the selection (or the whole layer if nothing is selected). Arrow keys nudge. Enter commits.</p>

@@ -1,11 +1,41 @@
 # FrameSketch
 
-A local app for drawing concept art frame by frame, timing each frame, recording
-voice-over per frame from your microphone, and adding captions.
+An app for drawing concept art frame by frame, timing each frame, recording
+voice-over from your microphone, adding captions and exporting a video.
 
-No build step and no dependencies beyond Python 3.
+No build step and no dependencies.
 
-## Run
+## Use it online (phones, tablets, any computer)
+
+Open the GitHub Pages site: **https://tylernicastro.github.io/FrameSketch/**
+
+Nothing to install. Projects are saved in that browser on that device (IndexedDB). On a phone
+you can *Add to Home Screen* to use it like an app; it keeps working offline after the first visit.
+
+**Moving a project to another device** – select it on the home screen and press **Export**. It
+packs every save, drawing and audio clip into one compressed `.fsk` file, which you can:
+- **Share…** (phones): AirDrop, Messages, email, Drive, Discord, … (on phones that won't share
+  unknown file types it is sent as a `.fsk.txt` holding the same project as text),
+- **Download file**, or
+- **Copy as text** and paste it into a note, chat or email (best for small projects).
+
+On the other device press **Import…** and choose the file or paste the text. You can also drop a
+file onto the home screen or paste project text there. Older `.framesketch.json` backups still import.
+
+**Touch screens** – one finger draws; two fingers pinch to zoom and drag to pan; a quick
+two-finger tap undoes and a three-finger tap redoes. The floating bar under the canvas has
+undo / redo, previous / next frame, brush size and color. **☰ Panels** opens the color, tool
+and layer panels. When you draw with a pen, fingers switch to panning so your palm can rest on
+the screen (Brush → *Draw with finger* changes it). **Share video** opens the share sheet.
+
+**Auto-save** (on by default, in the top bar) saves a few seconds after each change and whenever
+you switch away from the app, so a phone closing the tab in the background doesn't lose work.
+Press **?** for all shortcuts.
+
+The site is published by `.github/workflows/pages.yml` on every push to `main`
+(one-time setup: repository *Settings → Pages → Source: GitHub Actions*).
+
+## Run locally (projects saved as files)
 
 - **Windows:** double-click `start.bat` (or run `py server.py`)
 - **macOS / Linux:** `./start.sh` (or `python3 server.py`)
@@ -18,6 +48,11 @@ Your browser opens at <http://localhost:8765>. Options:
 | `FRAMESKETCH_DATA`  | `./data` | Folder where projects are stored |
 
 Pass `--no-browser` to skip opening a browser tab.
+
+With the local server, projects are files in `data/` and **Copy video** puts the video file on
+the clipboard. Without it (the online version), projects stay in the browser and the button
+becomes **Share video** on phones and **Save video** (download) on computers. Export / Import
+move projects between the two.
 
 ## Features
 

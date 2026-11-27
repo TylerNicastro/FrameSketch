@@ -128,6 +128,29 @@ export function modal({ title, message = '', fields = [], okText = 'OK', danger 
   });
 }
 
+/**
+ * A dialog with any content and a row of buttons. Resolves with the clicked button's `value`
+ * (null when cancelled). A button with `keepOpen` calls its `onClick` without closing.
+ */
+export function sheet({ title, body = [], buttons = [] }) {
+  return new Promise(resolve => {
+    const back = el('div', { class: 'modal-back sheet-back' });
+    const close = v => { back.remove(); document.removeEventListener('keydown', esc, true); resolve(v); };
+    const esc = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
+    const row = el('div', { class: 'btn-row end' },
+      el('button', { type: 'button', textContent: 'Cancel', onclick: () => close(null) }),
+      ...buttons.map(b => el('button', {
+        type: 'button', class: b.primary ? 'primary' : b.danger ? 'danger' : '', textContent: b.label, title: b.title || '',
+        onclick: async () => { if (b.onClick) { const r = await b.onClick(); if (b.keepOpen || r === false) return; } close(b.value ?? b.label); },
+      })));
+    back.append(el('div', { class: 'modal' }, el('h3', { textContent: title }), ...body, row));
+    back.addEventListener('click', e => { if (e.target === back) close(null); });
+    document.addEventListener('keydown', esc, true);
+    document.body.append(back);
+    setTimeout(() => (back.querySelector('textarea, input') || row.lastChild).focus(), 0);
+  });
+}
+
 export const confirmModal = (title, message, okText = 'Delete') =>
   modal({ title, message, okText, danger: true });
 
@@ -136,4 +159,4 @@ export async function promptModal(title, label, value = '') {
   return r ? r.v.trim() || null : null;
 }
 
-export const isModalOpen = () => !$('#modal').hidden;
+export const isModalOpen = () => !$('#modal').hidden || !!document.querySelector('.sheet-back');

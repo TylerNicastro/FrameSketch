@@ -123,9 +123,16 @@ export function encodeWav(samples, rate) {
   return new Uint8Array(buf);
 }
 
+// Sample arrays never change in place, so each one is encoded once (auto-save calls this often).
+const wavCache = new WeakMap();
 export function serializeAudio(a) {
   if (!a) return null;
-  return { wav: bytesToBase64(encodeWav(a.samples, a.rate)), gain: a.gain };
+  let wav = wavCache.get(a.samples);
+  if (!wav || wav.rate !== a.rate) {
+    wav = { rate: a.rate, b64: bytesToBase64(encodeWav(a.samples, a.rate)) };
+    wavCache.set(a.samples, wav);
+  }
+  return { wav: wav.b64, gain: a.gain };
 }
 
 export function deserializeAudio(o) {

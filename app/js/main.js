@@ -1,4 +1,5 @@
-import { $, el, timeAgo, toast, modal, confirmModal, promptModal } from './util.js';
+import { $, el, timeAgo, toast, modal, sheet, confirmModal, promptModal } from './util.js';
+import * as T from './transfer.js';
 import { api } from './api.js';
 import { Editor, newDoc } from './editor.js';
 
@@ -6,6 +7,7 @@ const state = { projects: [], selected: null };
 
 const editor = new Editor({
   onBack: async () => {
+    if (editor.dirty && editor.autoSaveOn) await editor.save({ quiet: true }); // auto-save: just save on the way out
     if (editor.dirty) {
       const ok = await confirmModal('Unsaved changes', 'Leave the editor and discard unsaved changes?', 'Discard & leave');
       if (!ok) return;
@@ -16,7 +18,7 @@ const editor = new Editor({
   },
 });
 
-window.frameSketch = { editor, state, api }; // handy from the browser console
+window.frameSketch = { editor, state, api, refresh }; // handy from the browser console
 
 window.addEventListener('beforeunload', e => {
   if (!$('#editor').hidden && editor.dirty) { e.preventDefault(); e.returnValue = ''; }
@@ -27,7 +29,7 @@ async function refresh() {
   try {
     state.projects = await api.listProjects();
   } catch (e) {
-    toast('Could not reach the FrameSketch server: ' + e.message, true);
+    toast((api.mode === 'server' ? 'Could not reach the FrameSketch server: ' : 'Could not read projects from this browser: ') + e.message, true);
     state.projects = [];
   }
   if (state.selected && !state.projects.find(p => p.id === state.selected)) state.selected = null;
@@ -198,4 +200,152 @@ $('#btnRenameProject').addEventListener('click', renameProject);
 $('#btnDuplicateProject').addEventListener('click', duplicateProject);
 $('#btnDeleteProject').addEventListener('click', deleteProject);
 
-refresh();
+// ---------------------------------------------------------------------
+// moving projects between devices: one compressed .fsk file (or the same thing as text)
+const mb = n => (n < 104858 ? `${Math.max(1, Math.round(n / 1024))} KB`
+  : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`);
+
+function downloadBlob(blob, name) {
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
+  const ta = el('textarea', { value: text, style: 'position:fixed;left:-9999px' });
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* not allowed */ }
+  ta.remove();
+  return ok;
+}
+
+const exportProject = run(async () => {
+  const p = state.projects.find(x => x.id === state.selected);
+  if (!p) return;
+  toast('Packing the project…');
+  const data = await T.collectProject(api, p);
+  const bytes = await T.pack(data);
+  $('#toast').hidden = true;
+  const name = T.fileName(p.name);
+  const fsk = new File([bytes], name, { type: 'application/octet-stream' });
+  let text = null;
+  const getText = () => (text ??= T.toText(bytes));
+  const txtFile = () => new File([getText()], name + '.txt', { type: 'text/plain' });
+  const canShare = f => { try { return !!navigator.canShare?.({ files: [f] }); } catch { return false; } };
+  const share = async () => {
+    // some phones only share known file types; the text form in a .txt works everywhere
+    const f = canShare(fsk) ? fsk : txtFile();
+    try { await navigator.share({ files: [f], title: p.name }); toast('Shared. Open it in FrameSketch on the other device with Import.'); }
+    catch (e) { if (e.name !== 'AbortError') toast('Could not share: ' + e.message, true); return false; }
+  };
+  const buttons = [];
+  if (navigator.share && (canShare(fsk) || canShare(new File(['x'], 'x.txt', { type: 'text/plain' })))) {
+    buttons.push({ label: 'Share…', title: 'Send it with AirDrop, Messages, email, Drive, Discord…', onClick: share });
+  }
+  buttons.push({ label: 'Copy as text', title: 'Paste it into a note, chat or email, then paste it into Import on the other device', onClick: async () => {
+    const t = getText();
+    if (await copyText(t)) toast(`Copied ${mb(t.length)} of text. On the other device: Import → Paste text.`);
+    else { toast('Copying was blocked by the browser. Use Download or Share instead.', true); return false; }
+  } });
+  buttons.push({ label: 'Download file', primary: true, onClick: () => { downloadBlob(fsk, name); toast(`Downloaded ${name}`); } });
+  const big = bytes.length > 15 * 1048576;
+  await sheet({
+    title: `Export "${p.name}"`,
+    body: [
+      el('p', { textContent: `All ${plural(p.saves.length, 'save')}, drawings and audio in one ${mb(bytes.length)} file. Open it on another device with Import (it works on phones too).` }),
+      el('p', { class: 'muted small', textContent: big
+        ? 'This project is large, so the text version may be too long for some chat apps. A file is the safer way.'
+        : 'The text version is the same project written as letters, handy for pasting into a note or message.' }),
+    ],
+    buttons,
+  });
+});
+
+const importData = run(async input => {
+  toast('Reading the project…');
+  const data = await T.unpack(input);
+  toast('Importing…');
+  const p = await T.importProject(api, data);
+  state.selected = p.id;
+  await refresh();
+  toast(`Imported "${p.name}" with ${plural(p.saves.length, 'save')}`);
+});
+
+const importDialog = run(async () => {
+  const ta = el('textarea', { rows: 5, placeholder: 'Paste project text here (starts with FSK1:)…', spellcheck: false });
+  const pasteBtn = el('button', { type: 'button', textContent: 'Paste from clipboard', onclick: async () => {
+    try { ta.value = await navigator.clipboard.readText(); } catch { toast('Long-press the box and choose Paste instead.', true); }
+  } });
+  const r = await sheet({
+    title: 'Import a project',
+    body: [
+      el('p', { textContent: 'Choose a .fsk file (or an older .framesketch.json backup), or paste project text copied with Export → Copy as text.' }),
+      el('div', { class: 'btn-row' },
+        el('button', { type: 'button', class: 'primary', textContent: 'Choose file…', onclick: () => { $('#importFile').click(); document.querySelector('.sheet-back .btn-row.end button')?.click(); } }),
+        navigator.clipboard?.readText ? pasteBtn : ''),
+      ta,
+    ],
+    buttons: [{ label: 'Import text', value: 'text' }],
+  });
+  if (r === 'text') {
+    if (!ta.value.trim()) { toast('Paste the project text first.', true); return; }
+    await importData(ta.value);
+  }
+});
+
+$('#btnBackupProject').addEventListener('click', exportProject);
+$('#btnImport').addEventListener('click', importDialog);
+$('#importFile').addEventListener('change', e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) importData(f);
+});
+
+// drop a project file anywhere on the home screen, or paste project text there
+const home = $('#home');
+home.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); home.classList.add('drop-target'); } });
+home.addEventListener('dragleave', e => { if (e.target === home) home.classList.remove('drop-target'); });
+home.addEventListener('drop', e => {
+  home.classList.remove('drop-target');
+  const f = e.dataTransfer?.files?.[0];
+  if (!f) return;
+  e.preventDefault();
+  importData(f);
+});
+window.addEventListener('paste', e => {
+  if (home.hidden || document.querySelector('.sheet-back') || !$('#modal').hidden) return;
+  if (e.target.matches?.('input, textarea')) return;
+  const f = e.clipboardData?.files?.[0];
+  const t = e.clipboardData?.getData('text/plain') || '';
+  if (f) { e.preventDefault(); importData(f); } else if (t.trim().startsWith('FSK1:')) { e.preventDefault(); importData(t); }
+});
+
+async function storageUsage() {
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (!est?.quota) return '';
+    return ` Using ${mb(est.usage || 0)} of about ${mb(est.quota)} available here.`;
+  } catch { return ''; }
+}
+
+// ---------------------------------------------------------------------
+async function start() {
+  const mode = await api.init();
+  editor.storageMode = mode;
+  $('#storageNote').textContent = mode === 'server'
+    ? 'Projects are saved as files in the data/ folder on this computer.'
+    : 'Projects are saved in this browser on this device. Use Export to keep a copy or move a project to another device.' + await storageUsage();
+  document.body.classList.toggle('local-mode', mode === 'local');
+  await refresh();
+}
+start();
+
+// installable app + offline use (not under the local server, where files change while you work)
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}

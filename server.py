@@ -175,6 +175,8 @@ class Handler(SimpleHTTPRequestHandler):
         ".css": "text/css",
         ".svg": "image/svg+xml",
         ".json": "application/json",
+        ".webmanifest": "application/manifest+json",
+        ".png": "image/png",
     }
 
     def __init__(self, *args, **kwargs):

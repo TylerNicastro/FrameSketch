@@ -1,7 +1,7 @@
 // The drawing / animation editor.
 import {
   $, $$, el, uid, clamp, makeCanvas, hexToRgba, rgbToHex, loadImage,
-  toast, confirmModal, promptModal, isModalOpen,
+  toast, modal, sheet, confirmModal, promptModal, isModalOpen,
 } from './util.js';
 import * as A from './audio.js';
 import { TrackView, trackColor } from './tracks.js';
@@ -94,10 +94,12 @@ export class Editor {
     $('#home').hidden = true;
     $('#editor').hidden = false;
     this.renderAll();
+    this.updateVideoButton();
     requestAnimationFrame(() => this.fit());
   }
 
   close() {
+    clearTimeout(this.autoTimer);
     this.stop();
     this.stopPreview();
     if (this.mic.recording) { this.mic.cancel(); this.endRecordingUI(); }
@@ -161,6 +163,8 @@ export class Editor {
     this.floating = null;
     this.clipboard = null;
     this.extraLayers = new Set(); // extra layers selected with Ctrl/Shift+click (for copying several)
+    this.touches = new Map(); // active touch points on the canvas (pinch / two-finger pan)
+    this.gesture = null;
     this.selCaption = null;
     this.undoStack = [];
     this.redoStack = [];
@@ -199,19 +203,52 @@ export class Editor {
     };
   }
 
-  async save() {
-    if (this.saving) return;
+  async save({ quiet = false } = {}) {
+    if (this.saving || !this.project) return;
     this.saving = true;
+    const seq = this.changeSeq;
+    this.showSaveState('saving');
     try {
       const meta = await api.writeSave(this.project.id, this.saveMeta.id, this.serialize());
       this.saveMeta = meta;
-      this.setDirty(false);
-      toast('Saved');
+      // only clean if nothing changed while the save was being written
+      if (this.changeSeq === seq) this.setDirty(false);
+      else this.scheduleAutoSave();
+      this.showSaveState(this.dirty ? 'unsaved' : 'saved');
+      if (!quiet) toast('Saved');
     } catch (e) {
+      this.showSaveState('unsaved');
       toast('Save failed: ' + e.message, true);
     } finally {
       this.saving = false;
     }
+  }
+
+  get autoSaveOn() { return $('#chkAutoSave').checked; }
+
+  /** Save a few seconds after the last change (when auto-save is on). */
+  scheduleAutoSave(delay = 3000) {
+    clearTimeout(this.autoTimer);
+    if (!this.autoSaveOn || !this.project) return;
+    this.autoTimer = setTimeout(() => this.autoSave(), delay);
+  }
+
+  async autoSave() {
+    if (!this.dirty || !this.autoSaveOn || !this.project || $('#editor').hidden) return;
+    // wait for a quiet moment: not mid-stroke, mid-move, playing, recording or exporting
+    if (this.saving || this.action || this.stroke || this.floating || this.playing || this.mic.recording || this.videoJob) {
+      this.scheduleAutoSave(2000);
+      return;
+    }
+    await this.save({ quiet: true });
+  }
+
+  showSaveState(state) {
+    const s = $('#saveState');
+    s.textContent = { saving: 'Saving…', saved: 'Saved', unsaved: this.autoSaveOn ? 'Unsaved' : 'Unsaved' }[state] || '';
+    s.className = 'save-state ' + state;
+    clearTimeout(this.saveStateTimer);
+    if (state === 'saved') this.saveStateTimer = setTimeout(() => { if (!this.dirty) s.textContent = ''; }, 2500);
   }
 
   async saveAs() {
@@ -230,6 +267,8 @@ export class Editor {
   }
 
   setDirty(v) {
+    if (v) { this.changeSeq = (this.changeSeq || 0) + 1; this.scheduleAutoSave(); }
+    if (v && !this.dirty) this.showSaveState('unsaved');
     this.dirty = v;
     $('#dirtyMark').hidden = !v;
   }
@@ -536,12 +575,14 @@ export class Editor {
       $('#opacityInput').value = Math.round(s.opacity * 100); $('#opacityOut').textContent = Math.round(s.opacity * 100) + '%';
     }
     this.scroll.style.cursor = this.toolCursor();
+    this.syncQuickBar();
     this.renderOverlay();
   }
 
   setColor(hex, addRecent = false) {
     if (!/^#[0-9a-f]{6}$/i.test(hex)) return;
     this.color = hex.toLowerCase();
+    if (this.frames?.length) $('#qbColor').style.background = this.color;
     $('#colorInput').value = this.color;
     if (document.activeElement !== $('#hexInput')) $('#hexInput').value = this.color;
     if (addRecent) this.addRecent(this.color);
@@ -595,6 +636,23 @@ export class Editor {
   }
 
   onDown(e) {
+    if (e.pointerType === 'touch') {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touches.size >= 2) {
+        if (!this.gesture) { this.cancelAction(); this.startGesture(); }
+        this.gesture.fingers = Math.max(this.gesture.fingers, this.touches.size);
+        return;
+      }
+    }
+    if (e.pointerType === 'pen' && !this.penSeen) {
+      this.penSeen = true;
+      let pref = null;
+      try { pref = localStorage.getItem('fs.fingerDraws'); } catch { /* storage blocked */ }
+      if (pref === null && this.fingerDraws) {
+        $('#fingerDrawInput').checked = false;
+        toast('Pen detected: fingers now pan and zoom so your palm can rest on the screen. Change it under Brush → "Draw with finger".');
+      }
+    }
     if (this.playing || !this.frames?.length) return;
     if (e.target !== this.view && e.target !== this.scroll && e.target !== $('#stage')) return;
     // ignore clicks on the scrollbars
@@ -602,7 +660,12 @@ export class Editor {
     if (e.button === 1 || (e.button === 0 && this.spaceHeld)) {
       e.preventDefault();
       this.action = { tool: 'pan', sx: e.clientX, sy: e.clientY, sl: this.scroll.scrollLeft, st: this.scroll.scrollTop };
-      this.scroll.setPointerCapture(e.pointerId);
+      try { this.scroll.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+      return;
+    }
+    // fingers pan instead of drawing when "Draw with finger" is off (pen users)
+    if (e.pointerType === 'touch' && !this.fingerDraws) {
+      this.action = { tool: 'pan', sx: e.clientX, sy: e.clientY, sl: this.scroll.scrollLeft, st: this.scroll.scrollTop };
       return;
     }
     // A pen's eraser end reports button 5 (buttons bit 32): erase whatever tool is selected.
@@ -611,7 +674,7 @@ export class Editor {
     const p = this.pt(e);
     let tool = penEraser ? 'eraser' : this.tool;
     if (e.altKey && ['brush', 'eraser', 'fill'].includes(tool)) tool = 'picker';
-    this.scroll.setPointerCapture(e.pointerId);
+    try { this.scroll.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     this.action = { tool, start: p };
 
     switch (tool) {
@@ -622,6 +685,7 @@ export class Editor {
         this.startStroke(p, e, tool === 'eraser');
         break;
       case 'fill':
+        if (e.pointerType === 'touch') { this.action = { tool: 'fill', start: p, pending: true }; break; }
         this.action = null;
         if (this.paintable()) this.fillAt(p);
         break;
@@ -651,6 +715,10 @@ export class Editor {
   }
 
   onMove(e) {
+    if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.gesture) { if (this.touches.size >= 2) this.updateGesture(); return; }
+    }
     const a = this.action;
     const p = this.pt(e);
     this.hover = p;
@@ -711,10 +779,18 @@ export class Editor {
   toolCursor() { return { move: 'move', caption: 'text' }[this.tool] || 'crosshair'; }
 
   onUp(e) {
+    if (e.pointerType === 'touch') {
+      this.touches.delete(e.pointerId);
+      if (this.gesture) {
+        if (!this.touches.size) this.endGesture(); // lifting the last finger ends the gesture
+        return;
+      }
+    }
     const a = this.action;
     if (!a) return;
     this.action = null;
     const p = this.pt(e);
+    if (a.tool === 'fill' && a.pending) { if (this.paintable()) this.fillAt(a.start); return; }
     if (a.capResize) { if (a.capResize.pushed) this.renderCaptionPanel(); this.renderOverlay(); return; }
     switch (a.tool) {
       case 'brush':
@@ -1504,9 +1580,11 @@ export class Editor {
   snapTracks() { return { kind: 'tracks', data: cloneTracks(this.tracks) }; }
 
   pushUndo(entry) {
+    this.lastRedo = this.redoStack; // a cancelled stroke (second finger landed) puts this back
     this.undoStack.push(entry);
     if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
     this.redoStack = [];
+    if (this.frames?.length) { $('#qbUndo').disabled = false; $('#qbRedo').disabled = true; }
   }
 
   applyEntry(e, navigate = true) {
@@ -1551,8 +1629,8 @@ export class Editor {
     this.render();
   }
 
-  undo() { this.history(this.undoStack, this.redoStack); }
-  redo() { this.history(this.redoStack, this.undoStack); }
+  undo() { this.history(this.undoStack, this.redoStack); this.syncQuickBar(); }
+  redo() { this.history(this.redoStack, this.undoStack); this.syncQuickBar(); }
 
   // =====================================================================
   // layers
@@ -1802,6 +1880,7 @@ export class Editor {
     $('#btnFrameLeft').disabled = this.cur === 0;
     $('#btnFrameRight').disabled = this.cur === this.frames.length - 1;
     $('#btnDelFrame').disabled = this.frames.length < 2;
+    this.syncQuickBar();
     this.updateStatus(this.hover);
   }
 
@@ -1944,16 +2023,104 @@ export class Editor {
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     };
     if (download) { saveFile(); toast(`Saved ${name} (${mb} MB).${big}`); return; }
-    try {
-      const r = await fetch('/api/export?name=' + encodeURIComponent(name), { method: 'POST', body: res.blob });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || r.statusText);
-      if (!data.copied) throw new Error(data.error || 'the clipboard was not available');
-      toast(`Video copied (${mb} MB ${res.ext.toUpperCase()}, made in ${((performance.now() - t0) / 1000).toFixed(1)}s). Paste it into Discord with Ctrl+V.${big}`);
-    } catch (e) {
-      saveFile();
-      toast(`Could not copy the video to the clipboard (${e.message}), so it was downloaded instead.${big}`, true);
+    const took = ((performance.now() - t0) / 1000).toFixed(1);
+    if (api.copyFile) {
+      // local server: put the file on the OS clipboard
+      try {
+        await api.copyFile(name, res.blob);
+        toast(`Video copied (${mb} MB ${res.ext.toUpperCase()}, made in ${took}s). Paste it into Discord with Ctrl+V.${big}`);
+      } catch (e) {
+        saveFile();
+        toast(`Could not copy the video to the clipboard (${e.message}), so it was downloaded instead.${big}`, true);
+      }
+      return;
     }
+    // no server: the share sheet on phones / tablets (Discord is in it), a download elsewhere
+    const file = new File([res.blob], name, { type: res.type });
+    if (this.shareMode()) {
+      const share = () => navigator.share({ files: [file], title: name });
+      try {
+        await share();
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return; // closed the share sheet
+        if (e.name === 'NotAllowedError') {
+          // encoding took long enough that the tap no longer counts; ask for another tap
+          if (await modal({ title: 'Video ready', message: `${mb} MB, made in ${took}s. Tap Share to send it to Discord or another app.${big}`, okText: 'Share' })) {
+            try { await share(); return; } catch (e2) { if (e2.name === 'AbortError') return; }
+          } else return;
+        }
+      }
+    }
+    saveFile();
+    toast(`Saved ${name} (${mb} MB, made in ${took}s). Drag the file into Discord to post it.${big}`);
+  }
+
+  /** Without the server, phones and tablets share the video; desktops download it. */
+  shareMode() {
+    try {
+      return !api.copyFile && matchMedia('(pointer: coarse)').matches &&
+        !!navigator.canShare?.({ files: [new File([new Uint8Array(1)], 'x.mp4', { type: 'video/mp4' })] });
+    } catch { return false; }
+  }
+
+  updateVideoButton() {
+    const b = $('#btnCopyVideo');
+    if (api.copyFile) { b.textContent = 'Copy video'; return; }
+    const share = this.shareMode();
+    b.textContent = share ? 'Share video' : 'Save video';
+    b.title = share
+      ? 'Make a video of the whole scene with audio and open the share sheet (pick Discord to post it). Shift+click saves the file.'
+      : 'Make a video of the whole scene with audio and download it as an MP4 (drag it into Discord to post it).';
+  }
+
+  // ---------------- touch: pinch to zoom, two fingers to pan ----------------
+  /** Undo whatever a first finger started when a second finger lands. */
+  cancelAction() {
+    const a = this.action;
+    this.action = null;
+    if (!a) return;
+    if (this.stroke) {
+      this.stroke = null;
+      this.undoStack.pop(); // startStroke pushed one; the stroke wasn't applied yet
+      this.redoStack = this.lastRedo || []; // ...and starting it cleared redo (a three-finger tap needs it)
+    } else if (a.tool === 'move' && this.floating && a.origin) {
+      this.floating.dx = a.origin.dx;
+      this.floating.dy = a.origin.dy;
+      if (a.selOrig) this.setSelection(a.selOrig);
+    }
+    this.requestRender();
+    this.renderOverlay();
+  }
+
+  startGesture() {
+    const [a, b] = [...this.touches.values()];
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    this.gesture = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: this.zoom, mx, my, sx: mx, sy: my, t0: performance.now(), fingers: 2, moved: false };
+  }
+
+  /** A quick tap with two fingers undoes, with three fingers redoes. */
+  endGesture() {
+    const g = this.gesture;
+    this.gesture = null;
+    if (!g || g.moved || performance.now() - g.t0 > 400) return;
+    if (g.fingers === 2) { this.undo(); toast('Undo'); }
+    else if (g.fingers === 3) { this.redo(); toast('Redo'); }
+  }
+
+  updateGesture() {
+    const [a, b] = [...this.touches.values()];
+    const g = this.gesture;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    if (Math.abs(d - g.d0) > 12 || Math.hypot(mx - g.sx, my - g.sy) > 12) g.moved = true;
+    if (!g.moved) return; // could still be a tap
+    const z = clamp(g.z0 * d / g.d0, 0.05, 16);
+    if (Math.abs(z - this.zoom) > 1e-3) this.setZoom(z, { clientX: mx, clientY: my });
+    this.scroll.scrollLeft -= mx - g.mx;
+    this.scroll.scrollTop -= my - g.my;
+    g.mx = mx;
+    g.my = my;
   }
 
   exportPng() {
@@ -2516,6 +2683,39 @@ export class Editor {
     range('#opacityInput', '#opacityOut', v => v + '%', v => (this.opacity = v / 100));
     range('#smoothInput', '#smoothOut', v => v + '%', v => (this.smoothing = v / 100));
     range('#tolInput', '#tolOut', v => v, () => {});
+    // auto-save (on by default; remembered per device)
+    try { $('#chkAutoSave').checked = localStorage.getItem('fs.autosave') !== '0'; } catch { /* storage blocked */ }
+    on('#chkAutoSave', 'change', e => {
+      try { localStorage.setItem('fs.autosave', e.target.checked ? '1' : '0'); } catch { /* storage blocked */ }
+      if (e.target.checked && this.dirty) this.scheduleAutoSave(500);
+    });
+    // phones close background tabs without warning: save when the app is hidden
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && this.dirty && this.autoSaveOn && !this.floating && !this.action) this.save({ quiet: true });
+    });
+    try {
+      const fd = localStorage.getItem('fs.fingerDraws');
+      if (fd !== null) $('#fingerDrawInput').checked = fd === '1';
+    } catch { /* storage blocked */ }
+    on('#fingerDrawInput', 'change', e => { try { localStorage.setItem('fs.fingerDraws', e.target.checked ? '1' : '0'); } catch { /* blocked */ } });
+    // quick bar (phones)
+    on('#qbUndo', 'click', () => this.undo());
+    on('#qbRedo', 'click', () => this.redo());
+    on('#qbPrev', 'click', () => this.goto(this.cur - 1));
+    on('#qbNext', 'click', () => this.goto(this.cur + 1));
+    on('#qbSize', 'input', e => this.setSize(Math.round(1 + (e.target.value / 100) ** 2 * 299)));
+    on('#qbColor', 'click', () => $('#btnPanels').click());
+    on('#btnShortcuts', 'click', () => this.showShortcuts());
+    on('#btnCopySel', 'click', () => this.copy(false));
+    on('#btnCutSel', 'click', () => this.copy(true));
+    on('#btnPasteSel', 'click', () => (this.clipboard ? this.paste() : toast('Copy something first.', true)));
+    on('#btnDropSel', 'click', () => this.commitFloating());
+    const setPanels = open => {
+      $('#editor').classList.toggle('panels-open', open);
+      $('#btnPanels').classList.toggle('active', open);
+    };
+    on('#btnPanels', 'click', () => setPanels(!$('#editor').classList.contains('panels-open')));
+    on('#sidebarBack', 'click', () => setPanels(false));
     on('#btnSelAll', 'click', () => this.selectAll());
     on('#btnDeselect', 'click', () => this.clearSelection());
     on('#btnClearSel', 'click', () => this.clearSelectedPixels());
@@ -2527,6 +2727,13 @@ export class Editor {
     sc.addEventListener('pointerup', e => this.onUp(e));
     sc.addEventListener('pointercancel', e => this.onUp(e));
     sc.addEventListener('pointerleave', () => { this.hover = null; this.renderOverlay(); });
+    // a finger lifted outside the canvas must not count as still touching
+    for (const type of ['pointerup', 'pointercancel']) {
+      window.addEventListener(type, e => {
+        if (e.pointerType !== 'touch' || !this.touches?.delete(e.pointerId)) return;
+        if (!this.touches.size && this.gesture) this.endGesture();
+      });
+    }
     sc.addEventListener('contextmenu', e => e.preventDefault());
     sc.addEventListener('wheel', e => {
       if (!e.ctrlKey && !e.metaKey) return;
@@ -2631,7 +2838,10 @@ export class Editor {
 
     // audio
     let collapsed = false;
-    try { collapsed = localStorage.getItem('fs.audioCollapsed') === '1'; } catch { /* storage blocked */ }
+    try {
+      const v = localStorage.getItem('fs.audioCollapsed');
+      collapsed = v === null ? matchMedia('(max-width: 760px)').matches : v === '1';
+    } catch { /* storage blocked */ }
     ab.classList.toggle('collapsed', collapsed);
     on('#btnAudioToggle', 'click', () => {
       const c = ab.classList.toggle('collapsed');
@@ -2733,6 +2943,7 @@ export class Editor {
         else if (this.selCaption) this.selectCaption(null); else this.clearSelection();
         break;
       case 'Enter': this.commitFloating(); break;
+      case '?': this.showShortcuts(); break;
       case 's': case 'S': if (this.audioFocus || this.splitMode) this.splitAtCursor(); break;
       case 'ArrowLeft': e.preventDefault(); canNudge ? this.nudge(-nudge, 0) : this.goto(this.cur - 1); break;
       case 'ArrowRight': e.preventDefault(); canNudge ? this.nudge(nudge, 0) : this.goto(this.cur + 1); break;
@@ -2749,8 +2960,45 @@ export class Editor {
     this.size = clamp(v, 1, 300);
     $('#sizeInput').value = this.size;
     $('#sizeOut').textContent = this.size;
+    this.syncQuickBar();
     this.renderOverlay();
   }
+
+  /** The floating bar on phones: undo / redo, frame stepping, brush size and color. */
+  syncQuickBar() {
+    if (!this.frames?.length) return;
+    $('#qbFrame').textContent = `${this.cur + 1}/${this.frames.length}`;
+    $('#qbPrev').disabled = this.cur === 0;
+    $('#qbNext').disabled = this.cur === this.frames.length - 1;
+    $('#qbColor').style.background = this.color;
+    const sized = this.tool === 'brush' || this.tool === 'eraser';
+    $('#qbSizeWrap').hidden = !sized;
+    if (sized) $('#qbSize').value = Math.round(Math.sqrt((this.size - 1) / 299) * 100); // finer control for small sizes
+    $('#qbUndo').disabled = !this.undoStack?.length;
+    $('#qbRedo').disabled = !this.redoStack?.length;
+  }
+
+  showShortcuts() {
+    const rows = [
+      ['B / E / G / I', 'Brush / eraser / fill / eyedropper'], ['M / L / V / T', 'Rect / lasso / move / caption'],
+      ['[ / ]', 'Brush size'], ['Alt+click', 'Pick a color while painting'],
+      ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['Ctrl+S', 'Save (Ctrl+Shift+S: save as new)'],
+      ['Ctrl+A / Ctrl+D', 'Select all / deselect'], ['Ctrl+C / X / V', 'Copy / cut / paste'],
+      ['Ctrl+Shift+C', 'Copy everything visible'], ['Shift+H / Shift+V', 'Flip horizontally / vertically'],
+      ['Enter', 'Drop moved pixels'], ['Delete', 'Clear selection, caption or clip'],
+      ['← → or , .', 'Previous / next frame'], ['Space', 'Play / stop'], ['H', 'Hand (pan) mode'],
+      ['Ctrl+wheel', 'Zoom'], ['R', 'Record'], ['S', 'Split audio clip'], ['?', 'This list'],
+      ['Touch', 'One finger draws · two fingers pinch / pan · two-finger tap undoes · three-finger tap redoes'],
+    ];
+    sheet({
+      title: 'Shortcuts',
+      body: [el('table', { class: 'shortcuts' }, ...rows.map(([k, v]) => el('tr', {}, el('td', {}, el('kbd', { textContent: k })), el('td', { textContent: v }))))],
+      buttons: [],
+    });
+  }
+
+  /** Fingers draw unless a pen has been used (then fingers only pan and zoom). Saved per device. */
+  get fingerDraws() { return $('#fingerDrawInput').checked; }
 }
 
 const isAudioFile = f => f.type.startsWith('audio/') || /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|webm)$/i.test(f.name);
