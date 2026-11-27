@@ -1,0 +1,36 @@
+# ---- FrameSketch user data ----------------------------------------------
+# Projects and saves live here (large JSON files with embedded PNG/WAV data).
+# They are ignored by default so the repository only tracks the app itself.
+# To version your artwork too, delete the line below (consider Git LFS for
+# big projects: `git lfs track "data/**/*.json"`).
+data/
+
+# Temporary files written while saving
+*.tmp
+
+# ---- Python -------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ---- Node (if you add tooling later) ------------------------------------
+node_modules/
+npm-debug.log*
+
+# ---- Editors / IDEs -----------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+
+# ---- OS junk ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Exports & logs -----------------------------------------------------
+exports/
+*.log

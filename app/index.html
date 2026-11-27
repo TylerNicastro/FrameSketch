@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FrameSketch</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ================= PROJECT MANAGER ================= -->
+<section id="home" class="screen">
+  <header class="home-header">
+    <h1>FrameSketch</h1>
+    <p class="muted">Concept art, frame timing, voice-over and captions.</p>
+  </header>
+  <div class="home-body">
+    <div class="panel home-col">
+      <div class="panel-head">
+        <h2>Projects</h2>
+        <button id="btnNewProject" class="primary">+ New project</button>
+      </div>
+      <ul id="projectList" class="item-list"></ul>
+      <p id="projectEmpty" class="muted empty">No projects yet. Create one to start drawing.</p>
+    </div>
+    <div class="panel home-col">
+      <div class="panel-head">
+        <h2 id="savesTitle">Saves</h2>
+        <div class="row-actions" id="projectActions" hidden>
+          <button id="btnRenameProject">Rename</button>
+          <button id="btnDuplicateProject">Duplicate</button>
+          <button id="btnDeleteProject" class="danger">Delete</button>
+        </div>
+      </div>
+      <ul id="saveList" class="item-list"></ul>
+      <p id="saveEmpty" class="muted empty">Select a project to see its saves.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= EDITOR ================= -->
+<section id="editor" class="screen" hidden>
+  <header class="topbar">
+    <button id="btnBack" title="Back to projects">&larr; Projects</button>
+    <div class="doc-title"><strong id="projName"></strong> <span class="muted">/</span> <span id="saveName"></span><span id="dirtyMark" class="dirty" hidden>&bull;</span></div>
+    <button id="btnSave" class="primary" title="Save (Ctrl+S)">Save</button>
+    <button id="btnSaveAs" title="Save as a new save in this project (Ctrl+Shift+S)">Save as new</button>
+    <span class="sep"></span>
+    <button id="btnUndo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">Redo</button>
+    <span class="sep"></span>
+    <button id="btnZoomOut" title="Zoom out">&minus;</button>
+    <span id="zoomLabel" class="zoom-label">100%</span>
+    <button id="btnZoomIn" title="Zoom in">+</button>
+    <button id="btnZoomFit" title="Fit to window">Fit</button>
+    <span class="sep"></span>
+    <button id="btnPlay" class="primary" title="Play / stop (Space)">&#9654; Play</button>
+    <label class="check"><input type="checkbox" id="chkLoop"> Loop</label>
+    <label class="speed" title="Playback speed for testing (5 to 1000%). Audio pitch changes with it. Not saved and doesn't affect exports.">Speed <input type="number" id="playSpeed" min="5" max="1000" step="5" value="100">%</label>
+    <label class="check"><input type="checkbox" id="chkOnion"> Onion skin</label>
+    <span class="spacer"></span>
+    <button id="btnCopyVideo" title="Record the whole scene as a video with audio and copy the file, ready to paste into Discord (Ctrl+V). Shift+click saves the file instead. Recording takes as long as the scene.">Copy video</button>
+    <button id="btnExportPng" title="Export current frame as PNG">Export PNG</button>
+  </header>
+
+  <div class="workspace">
+    <!-- tools -->
+    <nav class="toolbar" id="toolbar">
+      <button data-tool="brush" title="Brush (B)">&#128396;<span>Brush</span></button>
+      <button data-tool="eraser" title="Eraser (E)">&#9003;<span>Eraser</span></button>
+      <button data-tool="fill" title="Fill bucket (G)">&#129699;<span>Fill</span></button>
+      <button data-tool="picker" title="Eyedropper (I) — or Alt+click while painting">&#128167;<span>Picker</span></button>
+      <button data-tool="rect" title="Rectangle select (M)">&#11034;<span>Rect</span></button>
+      <button data-tool="lasso" title="Lasso select (L)">&#10160;<span>Lasso</span></button>
+      <button data-tool="move" title="Move selection / layer (V)">&#10021;<span>Move</span></button>
+      <button data-tool="caption" title="Caption (T)">T<span>Caption</span></button>
+      <span class="tool-sep"></span>
+      <button id="btnFlipH" title="Flip the selection horizontally, or the whole layer if nothing is selected (Shift+H)">&#8646;<span>Flip H</span></button>
+      <button id="btnFlipV" title="Flip the selection vertically, or the whole layer if nothing is selected (Shift+V)">&#8645;<span>Flip V</span></button>
+    </nav>
+
+    <!-- stage -->
+    <main class="stage-wrap">
+      <div class="stage-scroll" id="stageScroll">
+        <div class="stage" id="stage">
+          <canvas id="view"></canvas>
+          <canvas id="overlay"></canvas>
+        </div>
+      </div>
+      <div class="status" id="status"></div>
+    </main>
+
+    <!-- sidebar -->
+    <aside class="sidebar">
+      <div class="panel">
+        <h3>Color</h3>
+        <div class="color-row">
+          <input type="color" id="colorInput" value="#222222" title="Pick a color">
+          <input type="text" id="hexInput" value="#222222" maxlength="9" spellcheck="false">
+        </div>
+        <div class="swatches" id="swatches"></div>
+        <div class="muted small">Recent</div>
+        <div class="swatches" id="recentSwatches"></div>
+      </div>
+
+      <div class="panel" id="toolOptions">
+        <h3 id="toolOptionsTitle">Brush</h3>
+        <label class="opt" data-for="brush eraser">Size <output id="sizeOut">8</output>
+          <input type="range" id="sizeInput" min="1" max="300" value="8"></label>
+        <label class="opt" data-for="brush eraser">Opacity <output id="opacityOut">100%</output>
+          <input type="range" id="opacityInput" min="1" max="100" value="100"></label>
+        <label class="opt" data-for="brush eraser">Smoothing <output id="smoothOut">30%</output>
+          <input type="range" id="smoothInput" min="0" max="90" value="30"></label>
+        <label class="opt check" data-for="brush eraser"><input type="checkbox" id="pressureInput" checked> Pen pressure</label>
+        <label class="opt" data-for="fill">Tolerance <output id="tolOut">32</output>
+          <input type="range" id="tolInput" min="0" max="255" value="32"></label>
+        <label class="opt check" data-for="fill picker"><input type="checkbox" id="sampleAllInput" checked> Sample all layers</label>
+        <label class="opt check" data-for="fill"><input type="checkbox" id="fillGrowInput" checked> Grow 1px (closes gaps)</label>
+        <div class="opt btn-row" data-for="rect lasso move">
+          <button id="btnSelAll" title="Ctrl+A">Select all</button>
+          <button id="btnDeselect" title="Ctrl+D">Deselect</button>
+          <button id="btnClearSel" title="Delete">Clear</button>
+        </div>
+        <p class="opt muted small" data-for="rect lasso">Drag to select. Painting & fill stay inside the selection.</p>
+        <p class="opt muted small" data-for="move">Drag to move the selection (or the whole layer if nothing is selected). Arrow keys nudge. Enter commits.</p>
+        <p class="opt muted small" data-for="eraser">Erases the selected drawing layer to transparency. A pen's eraser tip works with any tool.</p>
+        <p class="opt muted small" data-for="caption">Click the canvas to add a caption (it goes bottom-center by default), click one to edit it, drag to move it. Or type in the <b>Caption</b> box under the canvas.</p>
+      </div>
+
+      <div class="panel" id="captionPanel" hidden>
+        <h3>Caption</h3>
+        <textarea id="capText" rows="3" placeholder="Caption text"></textarea>
+        <div class="cap-pos">
+          <span class="muted small">Position</span>
+          <div class="seg" id="capAnchor">
+            <button data-anchor="top" title="Top center">Top</button>
+            <button data-anchor="middle" title="Middle">Middle</button>
+            <button data-anchor="bottom" title="Bottom center">Bottom</button>
+            <button data-anchor="" title="Wherever you drag it">Free</button>
+          </div>
+          <label class="small" title="Distance from the top/bottom/side edge">Margin <input type="number" id="capMargin" min="0" max="2000" value="40"></label>
+          <span class="muted small" id="capSizeHint">Drag the box handles to resize it.</span>
+          <button id="capAutoSize" class="small" title="Make the box fit the text again" hidden>Auto size</button>
+        </div>
+        <div class="grid2">
+          <label>Size <input type="number" id="capSize" min="6" max="400" value="36"></label>
+          <label>Font
+            <select id="capFont">
+              <option value="system-ui, sans-serif">Sans</option>
+              <option value="Georgia, serif">Serif</option>
+              <option value="'Courier New', monospace">Mono</option>
+              <option value="'Comic Sans MS', 'Comic Neue', cursive">Comic</option>
+              <option value="Impact, 'Arial Black', sans-serif">Impact</option>
+            </select></label>
+          <label>Text <input type="color" id="capColor" value="#ffffff"></label>
+          <label>Outline <input type="color" id="capOutline" value="#000000"></label>
+          <label>Box <input type="color" id="capBox" value="#000000"></label>
+          <label>Box opacity <input type="range" id="capBoxAlpha" min="0" max="100" value="0"></label>
+          <label>Align
+            <select id="capAlign"><option>center</option><option>left</option><option>right</option></select></label>
+          <label class="check"><input type="checkbox" id="capBold" checked> Bold</label>
+        </div>
+        <div class="btn-row">
+          <button id="capStyleAll" title="Give every caption on this layer, on every frame, this caption's style and position">Apply style to all frames</button>
+          <button id="capToNext" title="Copy this caption to the next frame">Copy to next frame</button>
+          <button id="capDelete" class="danger">Delete</button>
+        </div>
+      </div>
+
+      <div class="panel layers-panel">
+        <div class="panel-head">
+          <h3>Layers</h3>
+          <div class="btn-row tight">
+            <button id="btnAddLayer" title="New drawing layer">+ Layer</button>
+            <button id="btnAddCaptionLayer" title="New caption layer">+ Captions</button>
+          </div>
+        </div>
+        <ul id="layerList" class="layer-list"></ul>
+        <label class="opt">Layer opacity <output id="layerOpOut">100%</output>
+          <input type="range" id="layerOpInput" min="0" max="100" value="100"></label>
+        <div class="btn-row tight">
+          <button id="btnLayerUp" title="Move layer up">&uarr;</button>
+          <button id="btnLayerDown" title="Move layer down">&darr;</button>
+          <button id="btnDupLayer">Duplicate</button>
+          <button id="btnMergeDown" title="Merge into layer below">Merge &darr;</button>
+          <button id="btnDelLayer" class="danger">Delete</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- timeline + audio -->
+  <footer class="bottom">
+    <div class="timeline-bar">
+      <strong>Frames</strong>
+      <button id="btnAddFrame" title="New blank frame after current">+ Frame</button>
+      <button id="btnDupFrame" title="Duplicate current frame">Duplicate</button>
+      <button id="btnFrameLeft" title="Move frame left">&larr;</button>
+      <button id="btnFrameRight" title="Move frame right">&rarr;</button>
+      <button id="btnDelFrame" class="danger">Delete</button>
+      <span class="sep"></span>
+      <label>Frame time <input type="number" id="frameDur" min="0.04" step="0.1" value="1"> s</label>
+      <button id="btnDurAll" title="Apply this time to every frame">Apply to all</button>
+      <span class="sep"></span>
+      <label class="quick-cap">Caption <input type="text" id="frameCaption" placeholder="Type this frame's caption… (Enter = next frame)" spellcheck="true"></label>
+      <span class="spacer"></span>
+      <span class="muted" id="totalTime"></span>
+    </div>
+    <div class="timeline" id="timeline"></div>
+
+    <div class="audio-panel" id="audioPanel">
+      <div class="audio-controls">
+        <button id="btnAudioToggle" class="ghost" title="Show / hide the audio tracks">&#9662;</button>
+        <strong>Audio</strong>
+        <button id="btnAddTrack" title="Add an audio track">+ Track</button>
+        <button id="btnRecord" class="record" title="Record from microphone onto the selected track at this frame (R)">&#9679; Record</button>
+        <span id="recTimer" class="muted"></span>
+        <button id="btnImportAudio" title="Import an audio file onto the selected track at this frame. You can also paste or drop audio files.">Import audio&hellip;</button>
+        <input type="file" id="audioFile" accept="audio/*,.mp3,.wav,.ogg,.oga,.m4a,.aac,.flac,.webm,.opus" hidden>
+        <span class="sep"></span>
+        <button id="btnAudioPlay" title="Play the selected clip">&#9654; Play</button>
+        <button id="btnAudioPlaySel" title="Play the selected region">&#9654; Selection</button>
+        <span class="sep"></span>
+        <button id="btnAudioSplit" title="Split a clip so each part can be moved on its own (S). Press it, then click a clip in the tracks or on the waveform where it should be split; split points snap to frame edges. If you've already clicked a point or selected a region on the waveform, it splits there right away. Alt+click a clip also splits it.">Split</button>
+        <button id="btnAudioKeep" title="Keep only the selected region">Clip to selection</button>
+        <button id="btnAudioCut" title="Remove the selected region">Cut selection</button>
+        <button id="btnAudioSilence" title="Silence the selected region">Silence</button>
+        <button id="btnAudioNormalize">Normalize</button>
+        <label>Gain <input type="range" id="audioGain" min="0" max="300" value="100"> <output id="audioGainOut">100%</output></label>
+        <span class="sep"></span>
+        <label class="check" title="Cut this clip off when its starting frame ends instead of letting it play on into later frames"><input type="checkbox" id="clipTrim"> Stop at frame end</label>
+        <button id="btnAudioFit" title="Set this frame's time so the clip fits exactly">Fit frame to clip</button>
+        <button id="btnAudioDelete" class="danger">Delete clip</button>
+        <span class="spacer"></span>
+        <span class="muted small" id="audioInfo"></span>
+      </div>
+      <div class="audio-body" id="audioBody">
+        <div class="tracks-wrap">
+          <div class="track-heads" id="trackHeads"></div>
+          <div class="track-scroll" id="trackScroll"><canvas id="tracksCanvas"></canvas></div>
+        </div>
+        <div class="wave-wrap">
+          <canvas id="wave"></canvas>
+          <div class="wave-empty" id="waveEmpty">Select a clip above to edit it, or Record / Import / paste audio onto the selected track.</div>
+        </div>
+      </div>
+    </div>
+  </footer>
+</section>
+
+<!-- modal -->
+<div class="modal-back" id="modal" hidden>
+  <form class="modal" id="modalForm" method="dialog">
+    <h3 id="modalTitle"></h3>
+    <div id="modalBody"></div>
+    <div class="btn-row end">
+      <button type="button" id="modalCancel">Cancel</button>
+      <button type="submit" id="modalOk" class="primary">OK</button>
+    </div>
+  </form>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
