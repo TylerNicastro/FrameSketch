@@ -183,6 +183,68 @@ export function normalize(a) {
   return { ...a, samples: a.samples.map(s => s * k), gain: 1 };
 }
 
+// ---------------- mixing + pitch-preserving time stretch ----------------
+/**
+ * Mix clips into one mono buffer at `sr`. `parts` is a list of
+ * { audio, start, end, gain } (seconds on the timeline). Linear resampling.
+ */
+export function mixParts(parts, total, sr) {
+  const out = new Float32Array(Math.max(1, Math.ceil(total * sr)));
+  for (const { audio: a, start, end, gain } of parts) {
+    if (!a?.samples.length || end <= start || gain <= 0) continue;
+    const g = gain * a.gain, s = a.samples;
+    const i0 = Math.max(0, Math.round(start * sr)), i1 = Math.min(out.length, Math.round(end * sr));
+    for (let i = i0; i < i1; i++) {
+      const pos = (i / sr - start) * a.rate;
+      const j = pos | 0;
+      if (j + 1 >= s.length) { if (j < s.length) out[i] += s[j] * g; break; }
+      const f = pos - j;
+      out[i] += (s[j] * (1 - f) + s[j + 1] * f) * g;
+    }
+  }
+  return out;
+}
+
+/**
+ * Change the speed of audio without changing its pitch (WSOLA: overlap-add of windowed frames,
+ * each picked within ±8 ms where it best continues the previous one). `speed` 2 = twice as fast.
+ */
+export function timeStretch(x, sr, speed) {
+  if (Math.abs(speed - 1) < 1e-3) return x.slice();
+  const N = (Math.round(sr * 0.04) >> 1) << 1; // 40 ms frames
+  const Hs = N >> 1; // 50% overlap in the output
+  const Ha = Hs * speed; // hop through the input
+  const tol = Math.round(sr * 0.008);
+  const outLen = Math.max(1, Math.ceil(x.length / speed));
+  const xp = new Float32Array(x.length + 2 * N + 2 * tol + Math.ceil(Ha) + 2); // zero padding: no bounds checks
+  xp.set(x);
+  const out = new Float32Array(outLen + N);
+  const norm = new Float32Array(outLen + N);
+  const win = new Float32Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+  let prev = 0;
+  for (let k = 0; k * Hs < outLen; k++) {
+    const so = k * Hs;
+    const nominal = Math.round(k * Ha);
+    let best = nominal;
+    if (k > 0) {
+      const target = prev + Hs; // what would naturally follow the previous frame
+      let bestScore = -Infinity;
+      for (let d = -tol; d <= tol; d += 2) {
+        const p = nominal + d;
+        if (p < 0) continue;
+        let score = 0;
+        for (let i = 0; i < N; i += 4) score += xp[p + i] * xp[target + i];
+        if (score > bestScore) { bestScore = score; best = p; }
+      }
+    }
+    for (let i = 0; i < N; i++) { out[so + i] += xp[best + i] * win[i]; norm[so + i] += win[i]; }
+    prev = best;
+  }
+  for (let i = 0; i < outLen; i++) out[i] = norm[i] > 1e-3 ? out[i] / norm[i] : 0;
+  return out.subarray(0, outLen);
+}
+
 // ---------------- peaks (for drawing long clips quickly) ----------------
 const PEAK_RATE = 200; // buckets per second
 const peakCache = new WeakMap();

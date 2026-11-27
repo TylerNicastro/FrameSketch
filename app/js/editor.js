@@ -2180,16 +2180,30 @@ export class Editor {
     return list;
   }
 
-  play() {
+  async play() {
     if (this.playing) return this.stop();
     this.commitFloating();
     this.stopPreview();
     this.playing = true;
     $('#btnPlay').innerHTML = '&#9632; Stop';
     const c = A.audioCtx();
+    this.playRate = this.speed();
+    // At other speeds, play a pitch-corrected mix of all tracks (so voices don't sound sped up)
+    this.stretchBuf = null;
+    if (this.playRate !== 1 && this.tracks.some(t => !t.muted && t.clips.length)) {
+      if (this.playRate < 0.25 || this.playRate > 4) {
+        toast('Pitch can only be kept between 25% and 400% speed, so the audio pitch changes here.');
+      } else {
+        if (this.stretchCache?.key !== this.stretchKey(this.playRate)) {
+          toast(`Preparing audio at ${Math.round(this.playRate * 100)}%…`);
+          await new Promise(r => setTimeout(r, 30)); // let the message show
+          if (!this.playing) return;
+        }
+        this.stretchBuf = this.stretchedBuffer(this.playRate);
+      }
+    }
     const { starts } = this.timing();
     const first = this.cur === this.frames.length - 1 && this.frames.length > 1 ? 0 : this.cur;
-    this.playRate = this.speed();
     this.playSources = new Set();
     this.trackGains = new Map();
     for (const t of this.tracks) {
@@ -2237,9 +2251,50 @@ export class Editor {
     return v > 0 ? clamp(v, 5, 1000) / 100 : 1;
   }
 
+  /** What the stretched mix depends on: clips, their placement and gain, mutes, volumes, frame times. */
+  stretchKey(rate) {
+    this.sampleIds ||= new WeakMap();
+    const sid = a => { if (!this.sampleIds.has(a.samples)) this.sampleIds.set(a.samples, (this.nextSampleId = (this.nextSampleId || 0) + 1)); return this.sampleIds.get(a.samples); };
+    return [rate, this.frames.map(f => f.id + ':' + f.duration).join(','),
+      ...this.tracks.map(t => [t.muted, t.volume, ...t.clips.map(c => [c.frameId, c.offset, c.trim, c.audio.gain, sid(c.audio)].join(':'))].join('/'))].join('|');
+  }
+
+  /** All unmuted tracks mixed and time-stretched to `rate` without changing pitch (cached). */
+  stretchedBuffer(rate) {
+    const key = this.stretchKey(rate);
+    if (this.stretchCache?.key === key) return this.stretchCache.buf;
+    const SR = 24000; // a preview: plenty for voice, keeps stretching quick
+    const timing = this.timing();
+    const parts = [];
+    for (const t of this.tracks) {
+      if (t.muted) continue;
+      for (const s of this.trackSpans(t, timing)) parts.push({ audio: s.clip.audio, start: s.start, end: s.end, gain: t.volume });
+    }
+    const mixed = A.mixParts(parts, timing.total, SR);
+    const out = A.timeStretch(mixed, SR, rate);
+    const buf = A.audioCtx().createBuffer(1, out.length, SR);
+    buf.copyToChannel(out, 0);
+    this.stretchCache = { key, buf };
+    return buf;
+  }
+
   /** Schedule every track's audio from timeline second `t0`, which plays at audio-clock time `at`. */
   schedulePass(t0, at) {
     this.pass = { t0, at };
+    if (this.stretchBuf) {
+      // one pre-mixed, pitch-corrected buffer; its time runs 1/rate as fast as the timeline
+      const off = t0 / this.playRate;
+      if (off >= this.stretchBuf.duration) return;
+      const c = A.audioCtx();
+      const src = c.createBufferSource();
+      src.buffer = this.stretchBuf;
+      src.connect(c.destination);
+      const late = Math.max(0, c.currentTime - at);
+      src.start(at + late, off + late);
+      this.playSources.add(src);
+      src.onended = () => this.playSources?.delete(src);
+      return;
+    }
     const timing = this.timing();
     for (const t of this.tracks) {
       const dest = this.trackGains.get(t.id);
