@@ -78,6 +78,31 @@ label.check { display: inline-flex; gap: 5px; align-items: center; color: var(--
 .item-list .row-actions button { padding: 3px 8px; font-size: 12px; }
 .empty { padding: 12px 2px; }
 
+/* project tree: folders, drag handles, sorting */
+.list-tools { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.list-tools .sort-label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+#btnSortInvert { min-width: 108px; }
+.item-list.tree li { margin-left: calc(var(--depth, 0) * 18px); padding-left: 6px; gap: 6px; }
+.item-list.tree li.folder { background: transparent; border-color: var(--line); }
+.item-list.tree li.folder.active { border-color: var(--accent); }
+.item-list.tree .drag {
+  cursor: grab; color: var(--muted); padding: 4px 3px; font-size: 15px; line-height: 1;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.item-list.tree .caret { padding: 0 4px; min-width: 24px; background: transparent; border: none; color: var(--muted); font-size: 15px; }
+@media (max-width: 760px) {
+  .item-list.tree li { margin-left: calc(var(--depth, 0) * 12px); }
+  #btnSortInvert { min-width: 0; }
+  .list-tools .spacer { display: none; }
+}
+@media (pointer: coarse) { .kbd-hint { display: none; } }
+.item-list.tree li.dragging { opacity: 0.4; }
+.item-list.tree li.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.item-list.tree li.drop-after { box-shadow: 0 2px 0 var(--accent); }
+.item-list.tree li.drop-into { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); }
+body.dragging-rows, body.dragging-rows * { cursor: grabbing !important; user-select: none; }
+.list-hint { margin: 8px 2px 0; }
+
 /* ---------- editor ---------- */
 #editor { height: 100%; display: flex; flex-direction: column; }
 .topbar {

@@ -1,9 +1,21 @@
 import { $, el, timeAgo, toast, modal, sheet, confirmModal, promptModal } from './util.js';
 import * as T from './transfer.js';
 import { api } from './api.js';
+import * as L from './library.js';
 import { Editor, newDoc } from './editor.js';
 
-const state = { projects: [], selected: null };
+const state = { projects: [], selected: null, selFolder: null, lib: L.normalize(null, []).lib };
+
+// how the list is shown: a per-device preference, not part of any project
+const VIEW_KEY = 'framesketch.home';
+const view = (() => {
+  let v = {};
+  try { v = JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch { /* storage blocked */ }
+  return { sort: L.SORTS[v.sort] ? v.sort : 'order', invert: !!v.invert, collapsed: new Set(Array.isArray(v.collapsed) ? v.collapsed : []) };
+})();
+function saveView() {
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify({ sort: view.sort, invert: view.invert, collapsed: [...view.collapsed] })); } catch { /* storage blocked */ }
+}
 
 const editor = new Editor({
   onBack: async () => {
@@ -18,7 +30,7 @@ const editor = new Editor({
   },
 });
 
-window.frameSketch = { editor, state, api, refresh }; // handy from the browser console
+window.frameSketch = { editor, state, view, api, refresh }; // handy from the browser console
 
 window.addEventListener('beforeunload', e => {
   if (!$('#editor').hidden && editor.dirty) { e.preventDefault(); e.returnValue = ''; }
@@ -26,42 +38,124 @@ window.addEventListener('beforeunload', e => {
 
 // ---------------------------------------------------------------------
 async function refresh() {
+  let stored = {};
   try {
-    state.projects = await api.listProjects();
+    [state.projects, stored] = await Promise.all([api.listProjects(), api.getLibrary().catch(() => ({}))]);
   } catch (e) {
     toast((api.mode === 'server' ? 'Could not reach the FrameSketch server: ' : 'Could not read projects from this browser: ') + e.message, true);
     state.projects = [];
   }
+  const { lib, changed } = L.normalize(stored, state.projects);
+  state.lib = lib;
+  if (changed && state.projects.length) api.setLibrary(lib).catch(() => {});
   if (state.selected && !state.projects.find(p => p.id === state.selected)) state.selected = null;
-  if (!state.selected && state.projects.length) state.selected = state.projects[0].id;
+  if (state.selFolder && !lib.folders[state.selFolder]) state.selFolder = null;
+  if (!state.selected && !state.selFolder) {
+    const first = rows().find(r => r.node.kind === 'project');
+    if (first) state.selected = first.node.id;
+  }
   render();
 }
 
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+/** Store a changed library (folders / order) and redraw. */
+async function setLib(lib) {
+  if (!lib) return false;
+  state.lib = lib;
+  render();
+  try { await api.setLibrary(lib); } catch (e) { toast('Could not save the folder layout: ' + e.message, true); }
+  return true;
+}
 
-function render() {
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+/** 4.5 s, 1:05, 1:02:03 */
+const fmtLen = s => {
+  if (s < 60) return `${Math.round(s * 10) / 10} s`;
+  const t = Math.round(s), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, ss = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+};
+
+const rows = () => L.flatten(L.buildTree(state.lib, state.projects, view.sort, view.invert), view.collapsed);
+const selRef = () => (state.selFolder ? L.fref(state.selFolder) : state.selected ? L.pref(state.selected) : null);
+/** Where new things go: the selected folder, or the folder of the selected project. */
+const currentFolder = () => state.selFolder
+  || (state.selected && L.parentOf(state.lib, L.pref(state.selected))) || L.ROOT;
+
+const INVERT_LABEL = {
+  order: ['As arranged', 'Reversed'],
+  name: ['A → Z', 'Z → A'],
+  modified: ['Newest first', 'Oldest first'],
+  length: ['Longest first', 'Shortest first'],
+};
+
+function select(kind, id) {
+  state.selected = kind === 'project' ? id : null;
+  state.selFolder = kind === 'folder' ? id : null;
+  render();
+}
+
+function toggleFolder(id, open = view.collapsed.has(id)) {
+  if (open) view.collapsed.delete(id); else view.collapsed.add(id);
+  saveView();
+  render();
+}
+
+function renderTree() {
+  $('#projectSort').value = view.sort;
+  const inv = $('#btnSortInvert');
+  inv.textContent = (view.invert ? '↑ ' : '↓ ') + INVERT_LABEL[view.sort][view.invert ? 1 : 0];
+  inv.setAttribute('aria-pressed', String(view.invert));
+
   const list = $('#projectList');
+  const keepScroll = list.scrollTop;
   list.innerHTML = '';
-  $('#projectEmpty').hidden = state.projects.length > 0;
-  for (const p of state.projects) {
-    const li = el('li', { class: p.id === state.selected ? 'active' : '' },
+  const all = rows();
+  $('#projectEmpty').hidden = all.length > 0;
+  const sel = selRef();
+  for (const { node, depth } of all) {
+    const folder = node.kind === 'folder';
+    const open = folder && !view.collapsed.has(node.id);
+    const p = node.project;
+    const meta = folder
+      ? `${node.count ? plural(node.count, 'project') : 'Empty'}${node.duration ? ' · ' + fmtLen(node.duration) : ''}`
+      : `${plural(p.saves.length, 'save')} · ${fmtLen(node.duration)} · ${p.width || '?'}×${p.height || '?'} · ${timeAgo(p.updated)}`;
+    const li = el('li', { class: `${folder ? 'folder' : 'project'}${node.ref === sel ? ' active' : ''}`, style: `--depth:${depth}` },
+      el('span', { class: 'drag', title: 'Drag to move', textContent: '⠿' }),
+      folder
+        ? el('button', { class: 'caret', title: open ? 'Collapse' : 'Expand', textContent: open ? '▾' : '▸', onclick: e => { e.stopPropagation(); toggleFolder(node.id); } })
+        : '',
       el('div', { class: 'grow' },
-        el('div', { class: 'name', textContent: p.name }),
-        el('div', { class: 'meta', textContent: `${plural(p.saves.length, 'save')} · ${p.width || '?'}×${p.height || '?'} · ${timeAgo(p.updated)}` })),
-      el('div', { class: 'row-actions' },
+        el('div', { class: 'name', textContent: (folder ? '📁 ' : '') + node.name }),
+        el('div', { class: 'meta', textContent: meta })),
+      folder ? '' : el('div', { class: 'row-actions' },
         el('button', { class: 'primary', textContent: 'Open', onclick: e => { e.stopPropagation(); openLatest(p); } })),
     );
-    li.addEventListener('click', () => { state.selected = p.id; render(); });
-    li.addEventListener('dblclick', () => openLatest(p));
+    li.dataset.ref = node.ref;
+    li.addEventListener('click', () => select(node.kind, node.id));
+    li.addEventListener('dblclick', () => (folder ? toggleFolder(node.id) : openLatest(p)));
+    li.querySelector('.drag').addEventListener('pointerdown', e => startDrag(e, node));
     list.append(li);
   }
+  list.scrollTop = keepScroll;
+}
 
+function render() {
+  renderTree();
+  const f = state.selFolder && state.lib.folders[state.selFolder];
+  $('#folderActions').hidden = !f;
   const p = state.projects.find(x => x.id === state.selected);
   $('#projectActions').hidden = !p;
-  $('#savesTitle').textContent = p ? `Saves — ${p.name}` : 'Saves';
+  $('#savesTitle').textContent = p ? `Saves — ${p.name}` : f ? `Folder — ${f.name}` : 'Saves';
   const sl = $('#saveList');
   sl.innerHTML = '';
   $('#saveEmpty').hidden = !!(p && p.saves.length);
+  if (f) {
+    const node = rows().find(r => r.node.ref === L.fref(state.selFolder))?.node;
+    const n = node?.count || 0;
+    $('#saveEmpty').textContent = n
+      ? `${plural(n, 'project')} inside${node.duration ? `, ${fmtLen(node.duration)} in total` : ''}. New projects and folders go into this folder.`
+      : 'This folder is empty. Drag projects onto it, or create a new project while it is selected.';
+    return;
+  }
   $('#saveEmpty').textContent = p ? 'This project has no saves.' : 'Select a project to see its saves.';
   if (!p) return;
 
@@ -141,8 +235,11 @@ const newProject = run(async () => {
     height = Math.round(Math.min(8192, Math.max(16, c.h)));
   }
   const name = r.name.trim() || 'Untitled project';
+  const folder = currentFolder();
   const p = await api.createProject(name, newDoc({ width, height, background: r.background }));
+  await setLib(L.move(state.lib, L.pref(p.id), folder, 0));
   state.selected = p.id;
+  state.selFolder = null;
   await openSave(p, p.saves[0]);
 });
 
@@ -155,7 +252,9 @@ const renameProject = run(async () => {
 });
 
 const duplicateProject = run(async () => {
-  const p = await api.duplicateProject(state.selected);
+  const orig = state.selected;
+  const p = await api.duplicateProject(orig);
+  await setLib(L.placeAfter(state.lib, L.pref(p.id), L.pref(orig)));
   state.selected = p.id;
   toast(`Duplicated as "${p.name}"`);
   await refresh();
@@ -193,6 +292,178 @@ const newBlankSave = run(async p => {
   const doc = newDoc({ width: p.width || 1280, height: p.height || 720, background: p.background || '#ffffff' });
   const s = await api.createSave(p.id, name, doc);
   await openSave(p, s);
+});
+
+// ---------------------------------------------------------------------
+// folders, moving and sorting
+const newFolder = run(async () => {
+  const name = await promptModal('New folder', 'Folder name', 'New folder');
+  if (!name?.trim()) return;
+  const parent = currentFolder();
+  const { lib, id } = L.addFolder(state.lib, name.trim(), parent, 0);
+  if (parent !== L.ROOT) view.collapsed.delete(parent);
+  saveView();
+  state.selFolder = id;
+  state.selected = null;
+  await setLib(lib);
+});
+
+const renameFolder = run(async () => {
+  const f = state.lib.folders[state.selFolder];
+  if (!f) return;
+  const name = await promptModal('Rename folder', 'Folder name', f.name);
+  if (!name?.trim()) return;
+  await setLib(L.renameFolder(state.lib, state.selFolder, name.trim()));
+});
+
+const deleteFolder = run(async () => {
+  const id = state.selFolder, f = state.lib.folders[id];
+  if (!f) return;
+  const parent = L.parentOf(state.lib, L.fref(id));
+  const where = parent && parent !== L.ROOT ? `"${state.lib.folders[parent].name}"` : 'the top level';
+  const inside = state.lib.order[id]?.length || 0;
+  if (inside && !await confirmModal('Delete folder', `Delete the folder "${f.name}"? Nothing inside is deleted: its ${plural(inside, 'item')} move to ${where}.`, 'Delete folder')) return;
+  state.selFolder = null;
+  await setLib(L.deleteFolder(state.lib, id));
+});
+
+/** "Move to…" dialog: pick a folder (works without dragging, e.g. on small phones). */
+const moveDialog = run(async ref => {
+  if (!ref) return;
+  const { kind, id } = L.parseRef(ref);
+  const options = [{ value: L.ROOT, label: 'Top level' }];
+  const walk = (cid, depth) => {
+    for (const r of state.lib.order[cid] || []) {
+      const x = L.parseRef(r);
+      if (x.kind !== 'folder' || (kind === 'folder' && x.id === id)) continue; // not into itself
+      options.push({ value: x.id, label: `${' '.repeat(depth)}📁 ${state.lib.folders[x.id].name}` });
+      walk(x.id, depth + 1);
+    }
+  };
+  walk(L.ROOT, 1);
+  const name = kind === 'folder' ? state.lib.folders[id].name : state.projects.find(p => p.id === id)?.name;
+  const r = await modal({
+    title: `Move "${name}"`, okText: 'Move',
+    fields: [{ name: 'to', label: 'Move to', type: 'select', value: L.parentOf(state.lib, ref) || L.ROOT, options }],
+  });
+  if (!r) return;
+  if (r.to !== L.ROOT) view.collapsed.delete(r.to);
+  saveView();
+  await setLib(L.move(state.lib, ref, r.to, 0));
+});
+
+/** Reordering only makes sense in the custom order, so switch to it first. */
+function useCustomOrder() {
+  if (view.sort === 'order') return;
+  view.sort = 'order';
+  view.invert = false;
+  saveView();
+  toast('Switched to Custom order to arrange items.');
+}
+
+/** Alt+↑ / Alt+↓: move the selected item one place within its folder. */
+const nudge = run(async delta => {
+  const ref = selRef();
+  const cid = ref && L.parentOf(state.lib, ref);
+  if (!cid) return;
+  useCustomOrder();
+  const list = state.lib.order[cid];
+  const i = list.indexOf(ref), j = i + (view.invert ? -delta : delta);
+  if (j < 0 || j >= list.length) return render();
+  await setLib(L.move(state.lib, ref, cid, j + (j > i ? 1 : 0)));
+});
+
+// Drag a row by its handle: drop above / below another row to reorder, or onto a folder to put
+// it inside. Pointer events, so it works with a mouse, a pen and a finger alike.
+function startDrag(e, node) {
+  if (e.button > 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const list = $('#projectList');
+  const src = e.target.closest('li');
+  let drop = null, raf = 0, lastY = e.clientY, started = false;
+  const x0 = e.clientX, y0 = e.clientY;
+  try { e.target.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
+  const clear = () => list.querySelectorAll('.drop-before, .drop-after, .drop-into')
+    .forEach(n => n.classList.remove('drop-before', 'drop-after', 'drop-into'));
+  const where = (x, y) => {
+    const li = document.elementFromPoint(x, y)?.closest?.('#projectList li[data-ref]');
+    if (!li) { // below the last row: the end of the top level
+      const r = list.getBoundingClientRect();
+      const bottom = list.lastElementChild?.getBoundingClientRect().bottom ?? r.top;
+      return y > bottom && y < r.bottom + 40 && x > r.left && x < r.right ? { end: true } : null;
+    }
+    const ref = li.dataset.ref, t = L.parseRef(ref);
+    if (ref === node.ref) return null;
+    // a folder can't go into itself or anything inside it
+    if (node.kind === 'folder' && L.isWithin(state.lib, t.kind === 'folder' ? t.id : L.parentOf(state.lib, ref), node.id)) return null;
+    const r = li.getBoundingClientRect(), f = (y - r.top) / r.height;
+    const pos = t.kind === 'folder' ? (f < 0.25 ? 'before' : f > 0.75 ? 'after' : 'into') : (f < 0.5 ? 'before' : 'after');
+    return { li, ref, pos };
+  };
+  const autoScroll = () => {
+    const r = list.getBoundingClientRect();
+    if (lastY < r.top + 36) list.scrollTop -= 12; else if (lastY > r.bottom - 36) list.scrollTop += 12;
+    raf = requestAnimationFrame(autoScroll);
+  };
+  const onMove = ev => {
+    lastY = ev.clientY;
+    if (!started) {
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+      started = true;
+      src.classList.add('dragging');
+      document.body.classList.add('dragging-rows');
+      raf = requestAnimationFrame(autoScroll);
+    }
+    clear();
+    drop = where(ev.clientX, ev.clientY);
+    if (drop?.li) drop.li.classList.add('drop-' + drop.pos);
+    else if (drop?.end) list.lastElementChild?.classList.add('drop-after');
+  };
+  const onUp = async () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    cancelAnimationFrame(raf);
+    clear();
+    src.classList.remove('dragging');
+    document.body.classList.remove('dragging-rows');
+    if (started && drop) await dropAt(node.ref, drop);
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+}
+
+/** Apply a drop: { ref, pos: before | after | into } or { end } (the end of the top level). */
+const dropAt = run(async (ref, drop) => {
+  if (drop.pos === 'into') {
+    const fid = L.parseRef(drop.ref).id;
+    view.collapsed.delete(fid);
+    saveView();
+    return setLib(L.move(state.lib, ref, fid, view.sort === 'order' && view.invert ? 0 : undefined));
+  }
+  useCustomOrder();
+  if (drop.end) return setLib(L.move(state.lib, ref, L.ROOT, view.invert ? 0 : undefined));
+  const cid = L.parentOf(state.lib, drop.ref);
+  const after = (drop.pos === 'after') !== view.invert; // a reversed list shows "after" above
+  return setLib(L.move(state.lib, ref, cid, state.lib.order[cid].indexOf(drop.ref) + (after ? 1 : 0)));
+});
+
+$('#projectSort').addEventListener('change', e => { view.sort = e.target.value; view.invert = false; saveView(); render(); });
+$('#btnSortInvert').addEventListener('click', () => { view.invert = !view.invert; saveView(); render(); });
+$('#btnNewFolder').addEventListener('click', newFolder);
+$('#btnRenameFolder').addEventListener('click', renameFolder);
+$('#btnDeleteFolder').addEventListener('click', deleteFolder);
+$('#btnMoveFolder').addEventListener('click', () => moveDialog(selRef()));
+$('#btnMoveProject').addEventListener('click', () => moveDialog(selRef()));
+window.addEventListener('keydown', e => {
+  if ($('#home').hidden || !$('#modal').hidden || document.querySelector('.sheet-back')) return;
+  if (e.target.matches?.('input, textarea, select')) return;
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); nudge(e.key === 'ArrowUp' ? -1 : 1); }
+  else if (e.key === 'F2' && state.selFolder) renameFolder();
+  else if (e.key === 'ArrowRight' && state.selFolder) toggleFolder(state.selFolder, true);
+  else if (e.key === 'ArrowLeft' && state.selFolder) toggleFolder(state.selFolder, false);
 });
 
 $('#btnNewProject').addEventListener('click', newProject);
@@ -270,8 +541,11 @@ const importData = run(async input => {
   toast('Reading the project…');
   const data = await T.unpack(input);
   toast('Importing…');
+  const folder = currentFolder();
   const p = await T.importProject(api, data);
+  await setLib(L.move(state.lib, L.pref(p.id), folder, 0));
   state.selected = p.id;
+  state.selFolder = null;
   await refresh();
   toast(`Imported "${p.name}" with ${plural(p.saves.length, 'save')}`);
 });

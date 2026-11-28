@@ -33,7 +33,21 @@
         </div>
         <input type="file" id="importFile" hidden>
       </div>
-      <ul id="projectList" class="item-list"></ul>
+      <div class="list-tools">
+        <button id="btnNewFolder" title="New folder (inside the selected folder)">+ Folder</button>
+        <span class="spacer"></span>
+        <label class="sort-label" title="How projects and folders are ordered">Sort
+          <select id="projectSort">
+            <option value="order">Custom order</option>
+            <option value="name">Name</option>
+            <option value="modified">Last modified</option>
+            <option value="length">Length</option>
+          </select>
+        </label>
+        <button id="btnSortInvert" title="Reverse the order" aria-pressed="false"></button>
+      </div>
+      <ul id="projectList" class="item-list tree"></ul>
+      <p class="muted small list-hint">Drag &#10303; to arrange items or drop them into a folder.<span class="kbd-hint"> Alt+&uarr;/&darr; moves the selected item.</span></p>
       <p id="projectEmpty" class="muted empty">No projects yet. Create one to start drawing.</p>
     </div>
     <div class="panel home-col">
@@ -42,8 +56,14 @@
         <div class="row-actions" id="projectActions" hidden>
           <button id="btnBackupProject" title="Save this project with all its saves as one file (or text) to open on another device">Export</button>
           <button id="btnRenameProject">Rename</button>
+          <button id="btnMoveProject" title="Move to another folder">Move&hellip;</button>
           <button id="btnDuplicateProject">Duplicate</button>
           <button id="btnDeleteProject" class="danger">Delete</button>
+        </div>
+        <div class="row-actions" id="folderActions" hidden>
+          <button id="btnRenameFolder">Rename</button>
+          <button id="btnMoveFolder" title="Move to another folder">Move&hellip;</button>
+          <button id="btnDeleteFolder" class="danger" title="Delete the folder; what's inside moves up a level">Delete</button>
         </div>
       </div>
       <ul id="saveList" class="item-list"></ul>

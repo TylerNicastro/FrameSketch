@@ -29,6 +29,7 @@ PORT = int(os.environ.get("FRAMESKETCH_PORT", "8765"))
 ID_RE = re.compile(r"^[a-z0-9]{6,40}$")
 MAX_BODY = 1024 * 1024 * 1024  # 1 GB
 EXPORTS_DIR = DATA_DIR / "exports"
+LIBRARY_FILE = DATA_DIR / "library.json"  # folders + custom order on the home screen
 KEEP_EXPORTS = 10
 
 
@@ -114,10 +115,23 @@ def save_path(pid, sid):
     return p
 
 
+META_KEYS = ("id", "name", "created", "updated", "frames", "duration")
+
+
+def doc_duration(doc):
+    """Length of the animation in seconds (sum of frame times)."""
+    try:
+        return round(sum(float(f.get("duration") or 0) for f in doc.get("frames", [])), 3)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
 def save_meta(path):
     """Read a save's metadata without returning its (large) document."""
     s = read_json(path)
-    return {k: s.get(k) for k in ("id", "name", "created", "updated", "frames")}
+    if s.get("duration") is None:  # saves from before lengths were stored
+        s["duration"] = doc_duration(s.get("doc") or {})
+    return {k: s.get(k) for k in META_KEYS}
 
 
 def project_summary(pid):
@@ -151,11 +165,12 @@ def write_save(pid, sid, name, doc, created=None):
         "created": created or t,
         "updated": t,
         "frames": len(doc.get("frames", [])) if isinstance(doc, dict) else 0,
+        "duration": doc_duration(doc) if isinstance(doc, dict) else 0,
         "doc": doc,
     }
     write_json(PROJECTS_DIR / pid / "saves" / f"{sid}.json", obj)
     touch_project(pid)
-    return {k: obj[k] for k in ("id", "name", "created", "updated", "frames")}
+    return {k: obj[k] for k in META_KEYS}
 
 
 class ApiError(Exception):
@@ -267,6 +282,18 @@ class Handler(SimpleHTTPRequestHandler):
         n = len(parts)
         if parts == ["export"] and method == "POST":
             return self.export_file()
+        if parts == ["library"]:
+            if method == "GET":
+                try:
+                    return read_json(LIBRARY_FILE)
+                except (OSError, ValueError):
+                    return {}
+            if method == "PUT":
+                b = self.body()
+                if not isinstance(b, dict):
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "expected an object")
+                write_json(LIBRARY_FILE, b)
+                return None
         if n == 0 or parts[0] != "projects":
             raise ApiError(HTTPStatus.NOT_FOUND, "unknown endpoint")
 

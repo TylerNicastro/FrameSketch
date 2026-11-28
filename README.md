@@ -62,6 +62,17 @@ duplicate and delete both projects and saves from the home screen. In the editor
 *Save* (Ctrl+S) overwrites the current save and *Save as new* (Ctrl+Shift+S)
 creates another save in the same project.
 
+**Folders & sorting** – *+ Folder* makes a folder (inside the selected folder, so folders can
+nest). Drag a row by its ⠿ handle: drop it on the top or bottom edge of another row to put it
+above or below, or on the middle of a folder to put it inside. **Move…** does the same from a list
+(handy on small screens), and Alt+↑ / Alt+↓ nudges the selected item. New, imported and
+duplicated projects go into the folder you're in. Deleting a folder never deletes projects: what's
+inside moves up a level. **Sort** by *Custom order* (your arrangement), *Name*, *Last modified*
+or *Length* (the latest save's running time); the button next to it reverses the order (Z → A,
+oldest first, shortest first…). With any sort but custom order, folders stay on top; a folder's
+date is its newest project and its length the total of its projects. Arranging by drag switches
+back to custom order. The sort is remembered per device; the folders are stored with the projects.
+
 **Drawing**
 - Layers: add, delete, reorder, rename (double-click), hide, opacity, duplicate, merge down.
   The layer stack is shared by every frame; each frame has its own drawing on each layer.
@@ -140,7 +151,8 @@ re-wraps to the new width and stays centered inside (*Auto size* fits the box to
 ## Storage & git
 
 Projects are saved to `data/projects/<project-id>/` as `project.json` plus one
-JSON file per save (drawings embedded as PNG, audio as WAV). `data/` is in
+JSON file per save (drawings embedded as PNG, audio as WAV). Folders and the custom order are in
+`data/library.json`. `data/` is in
 `.gitignore` so the repository tracks only the app; remove that line if you
 want to commit your artwork too (Git LFS is a good fit for large saves).
 
@@ -151,6 +163,7 @@ server.py        Python HTTP server + JSON API for projects/saves
 app/index.html   UI markup
 app/styles.css   Styles
 app/js/main.js   Project manager (home screen)
+app/js/library.js Folders, custom order and sorting for the home screen
 app/js/editor.js Drawing, layers, frames, captions, playback
 app/js/audio.js  Mic recording, audio import, WAV encode/decode, playback, waveform editor
 app/js/tracks.js Multi-track audio view

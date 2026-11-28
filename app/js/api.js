@@ -32,6 +32,10 @@ const serverApi = {
   duplicateSave: (pid, sid) => req('POST', `/projects/${pid}/saves/${sid}/duplicate`),
   deleteSave: (pid, sid) => req('DELETE', `/projects/${pid}/saves/${sid}`),
 
+  /** Folders and custom order for the home screen (see library.js). */
+  getLibrary: () => req('GET', '/library'),
+  setLibrary: lib => req('PUT', '/library', lib),
+
   /** Save a file under data/exports and put it on the OS clipboard (server only). */
   async copyFile(name, blob) {
     const r = await fetch('api/export?name=' + encodeURIComponent(name), { method: 'POST', body: blob });
@@ -49,11 +53,14 @@ let dbPromise = null;
 function db() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
-      const r = indexedDB.open(DB_NAME, 1);
-      r.onupgradeneeded = () => {
+      const r = indexedDB.open(DB_NAME, 2);
+      r.onupgradeneeded = e => {
         const d = r.result;
-        d.createObjectStore('projects', { keyPath: 'id' });
-        d.createObjectStore('saves', { keyPath: 'id' }).createIndex('pid', 'pid');
+        if (e.oldVersion < 1) {
+          d.createObjectStore('projects', { keyPath: 'id' });
+          d.createObjectStore('saves', { keyPath: 'id' }).createIndex('pid', 'pid');
+        }
+        if (e.oldVersion < 2) d.createObjectStore('meta'); // 'library': folders + custom order
       };
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error || new Error('This browser blocked storage (private mode?)'));
@@ -84,7 +91,9 @@ async function tx(stores, mode, fn) {
 }
 
 const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
-const metaOf = s => ({ id: s.id, name: s.name, created: s.created, updated: s.updated, frames: s.frames });
+/** Length of an animation in seconds (sum of frame times). */
+export const docDuration = doc => Math.round((doc?.frames || []).reduce((t, f) => t + (+f.duration || 0), 0) * 1000) / 1000;
+const metaOf = s => ({ id: s.id, name: s.name, created: s.created, updated: s.updated, frames: s.frames, duration: s.duration ?? docDuration(s.doc) });
 const notFound = what => new Error(`${what} not found`);
 
 async function summary(ps, ss, pid) {
@@ -96,7 +105,7 @@ async function summary(ps, ss, pid) {
 
 function putSave(ss, pid, sid, name, doc, created) {
   const t = Date.now();
-  const s = { id: sid, pid, name, created: created || t, updated: t, frames: doc?.frames?.length || 0, doc };
+  const s = { id: sid, pid, name, created: created || t, updated: t, frames: doc?.frames?.length || 0, duration: docDuration(doc), doc };
   ss.put(s);
   return s;
 }
@@ -188,6 +197,8 @@ const localApi = {
     ss.delete(sid);
     await touchProject(ps, pid);
   }),
+  getLibrary: () => tx(['meta'], 'readonly', m => done(m.get('library'))).then(l => l || {}),
+  setLibrary: lib => tx(['meta'], 'readwrite', m => { m.put(lib, 'library'); }),
   copyFile: null,
 };
 
