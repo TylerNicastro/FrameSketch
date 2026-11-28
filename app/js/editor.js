@@ -2187,20 +2187,17 @@ export class Editor {
     this.playing = true;
     $('#btnPlay').innerHTML = '&#9632; Stop';
     const c = A.audioCtx();
+    const token = this.playToken = (this.playToken || 0) + 1; // a newer play() / stop() cancels this one
     this.playRate = this.speed();
     // At other speeds, play a pitch-corrected mix of all tracks (so voices don't sound sped up)
     this.stretchBuf = null;
     if (this.playRate !== 1 && this.tracks.some(t => !t.muted && t.clips.length)) {
-      if (this.playRate < 0.25 || this.playRate > 4) {
-        toast('Pitch can only be kept between 25% and 400% speed, so the audio pitch changes here.');
-      } else {
-        if (this.stretchCache?.key !== this.stretchKey(this.playRate)) {
-          toast(`Preparing audio at ${Math.round(this.playRate * 100)}%…`);
-          await new Promise(r => setTimeout(r, 30)); // let the message show
-          if (!this.playing) return;
-        }
-        this.stretchBuf = this.stretchedBuffer(this.playRate);
+      if (this.stretchCache?.key !== this.stretchKey(this.playRate)) {
+        toast(`Preparing audio at ${Math.round(this.playRate * 100)}%…`);
+        await new Promise(r => setTimeout(r, 30)); // let the message show
+        if (!this.playing || token !== this.playToken) return;
       }
+      this.stretchBuf = this.stretchedBuffer(this.playRate);
     }
     const { starts } = this.timing();
     const first = this.cur === this.frames.length - 1 && this.frames.length > 1 ? 0 : this.cur;
@@ -2313,6 +2310,7 @@ export class Editor {
   stop() {
     if (!this.playing) return;
     this.playing = false;
+    this.playToken = (this.playToken || 0) + 1;
     cancelAnimationFrame(this.playRaf);
     for (const s of this.playSources || []) { try { s.stop(); } catch { /* already stopped */ } }
     for (const g of this.trackGains?.values() || []) g.disconnect();

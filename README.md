@@ -95,8 +95,7 @@ creates another save in the same project.
 **Frames & timing** – add, duplicate, delete and reorder frames (drag the thumbnails),
 set each frame's time in seconds or apply one time to all, and play back with looping. The **Speed %** box
 next to Loop plays the whole scene faster or slower for testing. The audio keeps its pitch
-(time-stretched) between 25% and 400%; outside that range the pitch changes with the speed. It
-isn't saved and doesn't affect exports.
+at every speed (it is time-stretched, not sped up). It isn't saved and doesn't affect exports.
 
 **Audio tracks** – any number of tracks (rename by double-clicking, mute, volume). A clip
 starts on a frame and keeps playing across the following frames until it ends, until the next
